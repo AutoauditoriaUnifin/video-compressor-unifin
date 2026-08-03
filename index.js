@@ -119,7 +119,7 @@ function comprimirVideo(inputPath, outputPath) {
 
         ffmpeg(inputPath)
 
-            // Máximo 40 segundos también en el servidor
+            // Máximo 41 segundos también en el servidor
             .duration(41)
 
             // Máximo 854 px de ancho; no agranda videos pequeños
@@ -278,28 +278,17 @@ async function descargarVideo(
 
 }
 /* =========================================================
-   BLOQUE 5 - ENDPOINT /upload
+   PROCESAR VIDEO DESDE UNA URL DE CLOUDINARY
 ========================================================= */
 
 app.post(
-    "/upload",
-    upload.single("video"),
+    "/process-url",
     async (req, res) => {
 
         let rutaOriginal = "";
         let rutaComprimida = "";
 
         if (procesandoVideo) {
-
-            if (
-                req.file &&
-                req.file.path &&
-                fs.existsSync(req.file.path)
-            ) {
-
-                fs.unlinkSync(req.file.path);
-
-            }
 
             return res.status(429).json({
 
@@ -314,148 +303,6 @@ app.post(
         }
 
         procesandoVideo = true;
-
-        try {
-
-            if (!req.file) {
-
-                procesandoVideo = false;
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    error:
-                        "No se recibió ningún video."
-
-                });
-
-            }
-
-            rutaOriginal = req.file.path;
-
-            const nombreComprimido =
-                "comprimido-" +
-                Date.now() +
-                ".mp4";
-
-            rutaComprimida =
-                path.join(
-                    tempDir,
-                    nombreComprimido
-                );
-
-            console.log(
-                "Video recibido:",
-                rutaOriginal
-            );
-
-            console.log(
-                "Tamaño original:",
-                (
-                    req.file.size /
-                    1024 /
-                    1024
-                ).toFixed(2) +
-                " MB"
-            );
-
-            console.log(
-                "Iniciando compresión..."
-            );
-
-            await comprimirVideo(
-                rutaOriginal,
-                rutaComprimida
-            );
-
-            console.log(
-                "Subiendo video comprimido a Cloudinary..."
-            );
-
-            const resultadoCloudinary =
-                await cloudinary.uploader.upload(
-                    rutaComprimida,
-                    {
-
-                        resource_type: "video",
-
-                        folder:
-                            "autoauditorias",
-
-                        use_filename: true,
-
-                        unique_filename: true,
-
-                        overwrite: false
-
-                    }
-                );
-
-            console.log(
-                "Video subido correctamente:",
-                resultadoCloudinary.secure_url
-            );
-
-            eliminarArchivo(rutaOriginal);
-            eliminarArchivo(rutaComprimida);
-
-            procesandoVideo = false;
-
-            return res.status(200).json({
-
-                success: true,
-
-                url:
-                    resultadoCloudinary.secure_url,
-
-                publicId:
-                    resultadoCloudinary.public_id,
-
-                formato:
-                    resultadoCloudinary.format,
-
-                bytes:
-                    resultadoCloudinary.bytes
-
-            });
-
-        } catch (error) {
-
-            console.error(
-                "Error procesando video:",
-                error
-            );
-
-            eliminarArchivo(rutaOriginal);
-            eliminarArchivo(rutaComprimida);
-
-            procesandoVideo = false;
-
-            return res.status(500).json({
-
-                success: false,
-
-                error:
-                    error.message ||
-                    "No fue posible procesar el video."
-
-            });
-
-        }
-
-    }
-);
-/* =========================================================
-   PROCESAR VIDEO DESDE UNA URL DE CLOUDINARY
-========================================================= */
-
-app.post(
-    "/process-url",
-    async (req, res) => {
-
-        let rutaOriginal = "";
-        let rutaComprimida = "";
 
         try {
 
@@ -476,6 +323,8 @@ app.post(
 
             if (!videoUrl) {
 
+                procesandoVideo = false;
+
                 return res.status(400).json({
 
                     success: false,
@@ -487,10 +336,6 @@ app.post(
 
             }
 
-            /*
-              Validar que solamente se descarguen videos
-              de tu propia cuenta Cloudinary.
-            */
             const dominioPermitido =
                 "https://res.cloudinary.com/" +
                 process.env.CLOUD_NAME +
@@ -501,6 +346,8 @@ app.post(
                     dominioPermitido
                 )
             ) {
+
+                procesandoVideo = false;
 
                 return res.status(400).json({
 
@@ -518,6 +365,8 @@ app.post(
                 duration &&
                 duration > 45
             ) {
+
+                procesandoVideo = false;
 
                 return res.status(400).json({
 
@@ -584,18 +433,13 @@ app.post(
                     rutaComprimida,
                     {
                         resource_type: "video",
-                        folder:
-                            "autoauditorias",
+                        folder: "autoauditorias",
                         use_filename: true,
                         unique_filename: true,
                         overwrite: false
                     }
                 );
 
-            /*
-              Borrar el video original temporal después
-              de que el comprimido quedó guardado.
-            */
             if (publicId) {
 
                 try {
@@ -603,8 +447,7 @@ app.post(
                     await cloudinary.uploader.destroy(
                         publicId,
                         {
-                            resource_type:
-                                "video",
+                            resource_type: "video",
                             invalidate: true
                         }
                     );
@@ -624,18 +467,15 @@ app.post(
 
             }
 
-            eliminarArchivo(
-                rutaOriginal
-            );
-
-            eliminarArchivo(
-                rutaComprimida
-            );
+            eliminarArchivo(rutaOriginal);
+            eliminarArchivo(rutaComprimida);
 
             console.log(
                 "Video final:",
                 resultadoCloudinary.secure_url
             );
+
+            procesandoVideo = false;
 
             return res.status(200).json({
 
@@ -662,13 +502,10 @@ app.post(
                 error
             );
 
-            eliminarArchivo(
-                rutaOriginal
-            );
+            eliminarArchivo(rutaOriginal);
+            eliminarArchivo(rutaComprimida);
 
-            eliminarArchivo(
-                rutaComprimida
-            );
+            procesandoVideo = false;
 
             return res.status(500).json({
 
