@@ -43,6 +43,8 @@ console.log("Cloudinary configurado correctamente.");
 const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
+const { Readable } = require("stream");
+const { pipeline } = require("stream/promises");
 
 // Crear carpeta temporal si no existe
 const tempDir = path.join(__dirname, "temp");
@@ -231,6 +233,51 @@ function eliminarArchivo(ruta) {
 
 }
 /* =========================================================
+   DESCARGAR VIDEO DESDE CLOUDINARY
+========================================================= */
+
+async function descargarVideo(
+    videoUrl,
+    rutaDestino
+) {
+
+    const respuesta =
+        await fetch(videoUrl);
+
+    if (!respuesta.ok) {
+
+        throw new Error(
+            "No fue posible descargar el video temporal " +
+            "desde Cloudinary."
+        );
+
+    }
+
+    if (!respuesta.body) {
+
+        throw new Error(
+            "Cloudinary no devolvió el contenido del video."
+        );
+
+    }
+
+    const streamNode =
+        Readable.fromWeb(
+            respuesta.body
+        );
+
+    const destino =
+        fs.createWriteStream(
+            rutaDestino
+        );
+
+    await pipeline(
+        streamNode,
+        destino
+    );
+
+}
+/* =========================================================
    BLOQUE 5 - ENDPOINT /upload
 ========================================================= */
 
@@ -384,6 +431,244 @@ app.post(
             eliminarArchivo(rutaComprimida);
 
             procesandoVideo = false;
+
+            return res.status(500).json({
+
+                success: false,
+
+                error:
+                    error.message ||
+                    "No fue posible procesar el video."
+
+            });
+
+        }
+
+    }
+);
+/* =========================================================
+   PROCESAR VIDEO DESDE UNA URL DE CLOUDINARY
+========================================================= */
+
+app.post(
+    "/process-url",
+    async (req, res) => {
+
+        let rutaOriginal = "";
+        let rutaComprimida = "";
+
+        try {
+
+            const videoUrl =
+                String(
+                    req.body.videoUrl || ""
+                ).trim();
+
+            const publicId =
+                String(
+                    req.body.publicId || ""
+                ).trim();
+
+            const duration =
+                Number(
+                    req.body.duration || 0
+                );
+
+            if (!videoUrl) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    error:
+                        "No se recibió la URL del video."
+
+                });
+
+            }
+
+            /*
+              Validar que solamente se descarguen videos
+              de tu propia cuenta Cloudinary.
+            */
+            const dominioPermitido =
+                "https://res.cloudinary.com/" +
+                process.env.CLOUD_NAME +
+                "/";
+
+            if (
+                !videoUrl.startsWith(
+                    dominioPermitido
+                )
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    error:
+                        "La URL del video no pertenece " +
+                        "a la cuenta autorizada."
+
+                });
+
+            }
+
+            if (
+                duration &&
+                duration > 45
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    error:
+                        "El video supera los 45 segundos."
+
+                });
+
+            }
+
+            const identificador =
+                Date.now() +
+                "-" +
+                Math.floor(
+                    Math.random() * 1000000
+                );
+
+            rutaOriginal =
+                path.join(
+                    tempDir,
+                    "original-" +
+                    identificador +
+                    ".video"
+                );
+
+            rutaComprimida =
+                path.join(
+                    tempDir,
+                    "comprimido-" +
+                    identificador +
+                    ".mp4"
+                );
+
+            console.log(
+                "Descargando video temporal desde Cloudinary..."
+            );
+
+            await descargarVideo(
+                videoUrl,
+                rutaOriginal
+            );
+
+            console.log(
+                "Video temporal descargado."
+            );
+
+            console.log(
+                "Iniciando compresión..."
+            );
+
+            await comprimirVideo(
+                rutaOriginal,
+                rutaComprimida
+            );
+
+            console.log(
+                "Subiendo video comprimido a Cloudinary..."
+            );
+
+            const resultadoCloudinary =
+                await cloudinary.uploader.upload(
+                    rutaComprimida,
+                    {
+                        resource_type: "video",
+                        folder:
+                            "autoauditorias",
+                        use_filename: true,
+                        unique_filename: true,
+                        overwrite: false
+                    }
+                );
+
+            /*
+              Borrar el video original temporal después
+              de que el comprimido quedó guardado.
+            */
+            if (publicId) {
+
+                try {
+
+                    await cloudinary.uploader.destroy(
+                        publicId,
+                        {
+                            resource_type:
+                                "video",
+                            invalidate: true
+                        }
+                    );
+
+                    console.log(
+                        "Video temporal eliminado de Cloudinary."
+                    );
+
+                } catch (errorEliminarCloudinary) {
+
+                    console.error(
+                        "No se pudo eliminar el video temporal:",
+                        errorEliminarCloudinary.message
+                    );
+
+                }
+
+            }
+
+            eliminarArchivo(
+                rutaOriginal
+            );
+
+            eliminarArchivo(
+                rutaComprimida
+            );
+
+            console.log(
+                "Video final:",
+                resultadoCloudinary.secure_url
+            );
+
+            return res.status(200).json({
+
+                success: true,
+
+                url:
+                    resultadoCloudinary.secure_url,
+
+                publicId:
+                    resultadoCloudinary.public_id,
+
+                bytes:
+                    resultadoCloudinary.bytes,
+
+                format:
+                    resultadoCloudinary.format
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "Error procesando video desde URL:",
+                error
+            );
+
+            eliminarArchivo(
+                rutaOriginal
+            );
+
+            eliminarArchivo(
+                rutaComprimida
+            );
 
             return res.status(500).json({
 
