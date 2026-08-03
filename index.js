@@ -83,7 +83,7 @@ const upload = multer({
 
     limits: {
 
-        fileSize: 250 * 1024 * 1024 // 250 MB
+        fileSize: 80 * 1024 * 1024 // 80 MB máximo
 
     },
 
@@ -103,64 +103,131 @@ const upload = multer({
 
 });
 /* =========================================================
-   BLOQUE 4 - FFMPEG
+   BLOQUE 4 - FFMPEG CON BAJO CONSUMO
 ========================================================= */
 
 const ffmpeg = require("fluent-ffmpeg");
 const ffmpegPath = require("ffmpeg-static");
 
-// Indicar a fluent-ffmpeg dónde está el ejecutable
 ffmpeg.setFfmpegPath(ffmpegPath);
 
-/**
- * Comprime un video
- * @param {string} inputPath Ruta del video original
- * @param {string} outputPath Ruta del video comprimido
- * @returns {Promise<string>}
- */
 function comprimirVideo(inputPath, outputPath) {
 
     return new Promise((resolve, reject) => {
 
         ffmpeg(inputPath)
 
-            // Codec H264
-            .videoCodec("libx264")
+            // Máximo 40 segundos también en el servidor
+            .duration(40)
 
-            // Codec de audio
+            // Máximo 854 px de ancho; no agranda videos pequeños
+            .videoFilters(
+                "scale='min(854,iw)':-2"
+            )
+
+            .videoCodec("libx264")
             .audioCodec("aac")
 
-            // Calidad
             .outputOptions([
-                "-preset veryfast",
-                "-crf 30",
-                "-movflags +faststart"
-            ])
 
-            // Resolución máxima
-            .size("1280x?")
+                // Menos uso de memoria y CPU
+                "-preset ultrafast",
+                "-threads 1",
+
+                // Compresión
+                "-crf 31",
+
+                // Compatibilidad
+                "-pix_fmt yuv420p",
+                "-movflags +faststart",
+
+                // Audio ligero
+                "-b:a 64k",
+                "-ac 1",
+                "-ar 32000",
+
+                // Evitar colas grandes
+                "-max_muxing_queue_size 512"
+
+            ])
 
             .format("mp4")
 
+            .on("start", (commandLine) => {
+
+                console.log(
+                    "Comando FFmpeg:",
+                    commandLine
+                );
+
+            })
+
+            .on("progress", (progress) => {
+
+                if (progress.percent) {
+
+                    console.log(
+                        "Compresión:",
+                        Math.round(progress.percent) + "%"
+                    );
+
+                }
+
+            })
+
             .on("end", () => {
 
-                console.log("Video comprimido correctamente.");
+                console.log(
+                    "Video comprimido correctamente."
+                );
 
                 resolve(outputPath);
 
             })
 
-            .on("error", (err) => {
+            .on("error", (error) => {
 
-                console.error(err);
+                console.error(
+                    "Error FFmpeg:",
+                    error.message
+                );
 
-                reject(err);
+                reject(error);
 
             })
 
             .save(outputPath);
 
     });
+
+}
+/* =========================================================
+   CONTROL DE COMPRESIONES
+========================================================= */
+
+let procesandoVideo = false;
+
+function eliminarArchivo(ruta) {
+
+    try {
+
+        if (
+            ruta &&
+            fs.existsSync(ruta)
+        ) {
+
+            fs.unlinkSync(ruta);
+
+        }
+
+    } catch (error) {
+
+        console.error(
+            "No se pudo eliminar archivo temporal:",
+            error.message
+        );
+
+    }
 
 }
 /* =========================================================
@@ -175,13 +242,45 @@ app.post(
         let rutaOriginal = "";
         let rutaComprimida = "";
 
+        if (procesandoVideo) {
+
+            if (
+                req.file &&
+                req.file.path &&
+                fs.existsSync(req.file.path)
+            ) {
+
+                fs.unlinkSync(req.file.path);
+
+            }
+
+            return res.status(429).json({
+
+                success: false,
+
+                error:
+                    "El servidor está procesando otro video. " +
+                    "Espere unos segundos e intente nuevamente."
+
+            });
+
+        }
+
+        procesandoVideo = true;
+
         try {
 
             if (!req.file) {
 
+                procesandoVideo = false;
+
                 return res.status(400).json({
+
                     success: false,
-                    error: "No se recibió ningún video."
+
+                    error:
+                        "No se recibió ningún video."
+
                 });
 
             }
@@ -205,6 +304,16 @@ app.post(
             );
 
             console.log(
+                "Tamaño original:",
+                (
+                    req.file.size /
+                    1024 /
+                    1024
+                ).toFixed(2) +
+                " MB"
+            );
+
+            console.log(
                 "Iniciando compresión..."
             );
 
@@ -221,11 +330,18 @@ app.post(
                 await cloudinary.uploader.upload(
                     rutaComprimida,
                     {
+
                         resource_type: "video",
-                        folder: "autoauditorias",
+
+                        folder:
+                            "autoauditorias",
+
                         use_filename: true,
+
                         unique_filename: true,
+
                         overwrite: false
+
                     }
                 );
 
@@ -234,23 +350,10 @@ app.post(
                 resultadoCloudinary.secure_url
             );
 
-            if (
-                rutaOriginal &&
-                fs.existsSync(rutaOriginal)
-            ) {
+            eliminarArchivo(rutaOriginal);
+            eliminarArchivo(rutaComprimida);
 
-                fs.unlinkSync(rutaOriginal);
-
-            }
-
-            if (
-                rutaComprimida &&
-                fs.existsSync(rutaComprimida)
-            ) {
-
-                fs.unlinkSync(rutaComprimida);
-
-            }
+            procesandoVideo = false;
 
             return res.status(200).json({
 
@@ -277,34 +380,10 @@ app.post(
                 error
             );
 
-            try {
+            eliminarArchivo(rutaOriginal);
+            eliminarArchivo(rutaComprimida);
 
-                if (
-                    rutaOriginal &&
-                    fs.existsSync(rutaOriginal)
-                ) {
-
-                    fs.unlinkSync(rutaOriginal);
-
-                }
-
-                if (
-                    rutaComprimida &&
-                    fs.existsSync(rutaComprimida)
-                ) {
-
-                    fs.unlinkSync(rutaComprimida);
-
-                }
-
-            } catch (errorLimpieza) {
-
-                console.error(
-                    "Error limpiando archivos:",
-                    errorLimpieza
-                );
-
-            }
+            procesandoVideo = false;
 
             return res.status(500).json({
 
@@ -329,13 +408,30 @@ app.use((error, req, res, next) => {
 
     console.error("Error general:", error);
 
+   if (
+    error &&
+    error.message === "Request aborted"
+) {
+
+    return res.status(499).json({
+
+        success: false,
+
+        error:
+            "La conexión se interrumpió antes de terminar " +
+            "de subir el video. Use Wi-Fi o un video más ligero."
+
+    });
+
+}
+
     if (error instanceof multer.MulterError) {
 
         if (error.code === "LIMIT_FILE_SIZE") {
 
             return res.status(413).json({
                 success: false,
-                error: "El video supera el límite permitido de 250 MB."
+                error: "El video supera el límite permitido de 80 MB."
             });
 
         }
@@ -360,11 +456,22 @@ app.use((error, req, res, next) => {
 // Railway asigna el puerto mediante process.env.PORT
 const PORT = process.env.PORT || 8080;
 
-app.listen(PORT, "0.0.0.0", () => {
+const server =
+    app.listen(
+        PORT,
+        "0.0.0.0",
+        () => {
 
-    console.log(
-        "Servidor Video Compressor UNIFIN activo en el puerto " +
-        PORT
+            console.log(
+                "Servidor Video Compressor UNIFIN activo en el puerto " +
+                PORT
+            );
+
+        }
     );
 
-});
+// No cerrar solicitudes lentas desde Node.
+// Railway mantiene su propio límite de subida.
+server.requestTimeout = 0;
+server.headersTimeout = 0;
+server.keepAliveTimeout = 65000;
