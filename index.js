@@ -118,7 +118,7 @@ function comprimirVideo(inputPath, outputPath) {
         ffmpeg(inputPath)
 
             // Máximo 40 segundos también en el servidor
-            .duration(40)
+            .duration(41)
 
             // Máximo 854 px de ancho; no agranda videos pequeños
             .videoFilters(
